@@ -34,23 +34,25 @@ def main():
         ).fetchone()[0]
         result = requests.get("https://m.cmbchina.com/api/rate/getfxrate").json()
         if result["status"] != 0:
-            raise Exception(f"汇率接口异常：{result['status']}")
+            raise Exception(f"汇率接口异常: {result['status']}")
         for row in result["data"]:
             if row["ZCcyNbr"] == "美元":
                 rate = round(float(row["ZRthBid"]) / 100, 4)
-                logger.info(f"『美元』现汇买入价：{rate}")
+                logger.info(f"现汇(美元)买入价: {rate}")
                 cursor.execute(
                     "replace into rate_log (`date`, rate) values (?, ?)",
                     (datetime.now().strftime("%Y-%m-%d"), rate),
                 )
                 conn.commit()
                 if rate > rate_old:
-                    robot.send_markdown("汇率上涨", f"### 汇率上涨\n> {rate_old} -> {rate}")
+                    diff_value = round(rate - rate_old, 4)
+                    robot.send_markdown("汇率上涨", f"### 汇率上涨\n> 当前汇率: {rate} (+{diff_value})")
                 elif rate < rate_old:
-                    robot.send_markdown("汇率下跌", f"### 汇率下跌\n> {rate_old} -> {rate}")
+                    diff_value = round(rate_old - rate, 4)
+                    robot.send_markdown("汇率下跌", f"### 汇率下跌\n> 当前汇率: {rate} (-{diff_value})")
                 break
     except Exception as e:
-        logger.error(f"查询失败：{e}")
+        logger.error(f"查询失败: {e}")
 
 
 logger = get_logger()
