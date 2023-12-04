@@ -1,21 +1,14 @@
 import requests
 import sqlite3
 from datetime import datetime
-import base64
-import hmac
-import hashlib
-import time
-from urllib.parse import urljoin, quote_plus
-import json
 import logging
 import sys
 import os
 from dotenv import load_dotenv
+from dingding import DingDing
+from bs4 import BeautifulSoup
 
 load_dotenv()
-
-DING_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=" + os.getenv("ACCESS_TOKEN")
-DING_SECRET = os.getenv("SECRET")
 
 
 def get_logger():
@@ -29,48 +22,46 @@ def get_logger():
     return logger
 
 
-def send_notification(msg):
-    timestamp = int(round(time.time()*1000))
-    data_enc = f"{timestamp}\n{DING_SECRET}".encode('utf-8')
-    secret_enc = DING_SECRET.encode('utf-8')
-    hmac_code = hmac.new(secret_enc, data_enc, digestmod=hashlib.sha256).digest()
-    sign = quote_plus(base64.b64encode(hmac_code))
-    url = f"{DING_WEBHOOK}&timestamp={timestamp}&sign={sign}"
-    params = {'msgtype': 'text', 'text': {'content': msg}}
+def get_exchange_rate_BOC():
     try:
-        r = requests.post(url, json=params)
-        res = r.json()
-        if res['errcode'] != 0:
-            raise Exception(json.dumps(res))
-        logger.info("通知成功")
+        r = requests.post(
+            'https://srh.bankofchina.com/search/whpj/search_cn.jsp',
+            data={'pjname': '美元'}
+        )
+        soup = BeautifulSoup(r.text, 'html.parser')
+        return round(float(soup.select('table')[1].select('tr')[1].select('td')[1].text) / 100, 4)
     except Exception as e:
-        logger.error(f"通知出错: {e}")
+        logger.error(f"获取汇率失败: {e}")
 
 
 def main():
     logger.info('begin query')
+    con = sqlite3.connect(sys.path[0] + '/currency_data.db')
+    cur = con.cursor()
     cur.execute("select `rate` from rate_log order by `date` desc limit 1")
-    last_rate = cur.fetchone()[0]
-    r = requests.get('https://api.apilayer.com/currency_data/live?base=USD&symbols=CNY', headers={'apikey': os.getenv("API_KEY")})
-    data = r.json()
-    if data['success']:
-        current_rate = data['quotes']['USDCNY']
-        cur.execute("replace into rate_log (`date`, `rate`) VALUES (?, ?)", (datetime.now().strftime('%Y-%m-%d'), current_rate))
+    rate_old = cur.fetchone()[0]
+    rate = get_exchange_rate_BOC()
+    if rate:
+        logger.info(f"现汇(美元)买入价: {rate}")
+        cur.execute(
+            "replace into rate_log (`date`, `rate`) VALUES (?, ?)",
+            (datetime.now().strftime('%Y-%m-%d'), rate),
+        )
         con.commit()
-        if current_rate > last_rate:
-            send_notification(f"[汇率监控] 🟥 上涨：{last_rate} -> {current_rate}")
-        elif current_rate < last_rate:
-            send_notification(f"[汇率监控] 🟩 下跌：{last_rate} -> {current_rate}")
-    else:
-        raise Exception(r.text)
+        if rate > rate_old:
+            diff_value = round(rate - rate_old, 4)
+            robot.send_markdown("汇率上涨", f"### 汇率上涨\n> 当前汇率: {rate} (+{diff_value})")
+        elif rate < rate_old:
+            diff_value = round(rate_old - rate, 4)
+            robot.send_markdown("汇率下跌", f"### 汇率下跌\n> 当前汇率: {rate} (-{diff_value})")
 
 
 if __name__ == '__main__':
     logger = get_logger()
-    con = sqlite3.connect(sys.path[0] + '/currency_data.db')
-    cur = con.cursor()
+    robot = DingDing(os.getenv("ACCESS_TOKEN"))
+    robot.set_secret(os.getenv("SECRET"))
     try:
         main()
     except Exception as err:
         logger.error(f"query error: {err}")
-        send_notification("查询汇率出错")
+        robot.send_text(f"查询汇率出错: {err}")
